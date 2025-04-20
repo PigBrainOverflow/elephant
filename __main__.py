@@ -28,68 +28,32 @@ def test_extract_memory(netlist: db.NetlistDatabase, verbose: bool = False):
         pass
     print("Reduced all qmuxes")
     rps = rewriter.find_readport(netlist)
-    mems = rewriter.find_memory(rps)
-    wps = rewriter.create_writeport(netlist, mems)
     time_elapsed = time.time() - start
-    print(f"Found {len(mems)} memory(ies):")
-    for i, (qss, rps) in enumerate(mems.items()):
-        print(f"\tMemory {i}: width = {len(qss)}, height = {len(qss[0])}")
-        if verbose:
-            for j, (qs, ra, rd) in enumerate(rps):
-                print(f"\t\tRead port {j}:")
-                print(f"\t\t\tRead address: {ra}")
-                print(f"\t\t\tRead data: {rd}")
-                print(f"\t\t\tRegisters: {qs}")
-            print(f"\t\tWrite port:")
-            wen, wa, wd = wps[qss]
-            print(f"\t\t\tWrite enable: {wen}")
-            print(f"\t\t\tWrite address: {wa}")
-            print(f"\t\t\tWrite data: {wd}")
-        else:
-            for j, (qs, ra, rd) in enumerate(rps):
-                print(f"\t\tRead port {j}:")
-                print(f"\t\t\tRead address: {ra[:5]}" + ("..." if len(ra) > 5 else ""))
-                print(f"\t\t\tRead data: {rd[:5]}" + ("..." if len(rd) > 5 else ""))
-                truncated_qs = [qs[:5] for qs in qs[:5]]
-                print(f"\t\t\tRegisters: {truncated_qs}" + ("..." if len(qs) > 5 else ""))
-            wen, wa, wd = wps[qss]
-            print(f"\t\tWrite port:")
-            print(f"\t\t\tWrite enable: {wen}")
-            print(f"\t\t\tWrite address: {wa[:5]}" + ("..." if len(wa) > 5 else ""))
-            print(f"\t\t\tWrite data: {wd[:5]}" + ("..." if len(wd) > 5 else ""))
+    print(f"Found {len(rps)} read port(s)")
     print(f"Time elapsed: {time_elapsed:.2f}s")
-
 
 def test_extract_quasi_memory(netlist: db.NetlistDatabase, verbose: bool = False):
-    # def flatten(l: list[int | list | None]) -> list:
-    #     result = []
-    #     for item in l:
-    #         if isinstance(item, list):
-    #             result.extend(flatten(item))
-    #         elif item is not None:
-    #             result.append(item)
-    #     return result
-    start = time.time()
-    rewriter.rewrite_dffe_pn_to_pp(netlist)
-    cnt = rewriter.rewrite_mux_to_quasi_qmux(netlist)
-    print(f"Rewrote {cnt} muxes to quasi qmuxes")
-    while rewriter.reduce_quasi_qmux_once(netlist) > 0:
-        pass
-    print("Reduced all quasi qmuxes")
-    mems = rewriter.find_quasi_memory(netlist)
-    time_elapsed = time.time() - start
-    print(f"Found {len(mems)} quasi memory(ies):")
-    for qss, ra, rd in mems:
-        print(f"\tMemory: width = {len(qss)}, height = {len(qss[0]) - 1}")  # exclude the last const 0 dff
-        ra = [e for e in ra if e is not None]
-        if verbose:
-            print(f"\t\tRead address: {ra}")
-            print(f"\t\tRead data: {rd}")
-        else:
-            print(f"\t\tRead address: {ra[:5]}" + ("..." if len(ra) > 5 else ""))
-            print(f"\t\tRead data: {rd[:5]}" + ("..." if len(rd) > 5 else ""))
-    print(f"Time elapsed: {time_elapsed:.2f}s")
-
+    # start = time.time()
+    # rewriter.rewrite_dffe_pn_to_pp(netlist)
+    # cnt = rewriter.rewrite_mux_to_quasi_qmux(netlist)
+    # print(f"Rewrote {cnt} muxes to quasi qmuxes")
+    # while rewriter.reduce_quasi_qmux_once(netlist) > 0:
+    #     pass
+    # print("Reduced all quasi qmuxes")
+    # mems = rewriter.find_quasi_memory(netlist)
+    # time_elapsed = time.time() - start
+    # print(f"Found {len(mems)} quasi memory(ies):")
+    # for qss, ra, rd in mems:
+    #     print(f"\tMemory: width = {len(qss)}, height = {len(qss[0]) - 1}")  # exclude the last const 0 dff
+    #     ra = [e for e in ra if e is not None]
+    #     if verbose:
+    #         print(f"\t\tRead address: {ra}")
+    #         print(f"\t\tRead data: {rd}")
+    #     else:
+    #         print(f"\t\tRead address: {ra[:5]}" + ("..." if len(ra) > 5 else ""))
+    #         print(f"\t\tRead data: {rd[:5]}" + ("..." if len(rd) > 5 else ""))
+    # print(f"Time elapsed: {time_elapsed:.2f}s")
+    raise NotImplementedError()
 
 if __name__ == "__main__":
     from argparse import ArgumentParser
@@ -109,7 +73,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.name is None and args.top is None:
-        name, top = NETLIST_FILES[-1]
+        name, top = NETLIST_FILES[0]
         name = NETLIST_PATH + name + ".json"
     elif args.name is None:
         print("Provide JSON filename with --input")
