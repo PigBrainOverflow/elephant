@@ -15,7 +15,8 @@ NETLIST_FILES = [
     ("bsg_cache", "top"),
     ("bsg_mem_1rw_sync_synth_width_p8_els_p256_latch_last_read_p1",
      "bsg_mem_1rw_sync_synth_width_p8_els_p256_latch_last_read_p1"),
-    ("bsg_cache_ways_p_2_data_width_p_32", "top")
+    ("bsg_cache_ways_p_2_data_width_p_32", "top"),
+    ("1r1w_mem", "simple_dual_port_mem")
 ]
 
 
@@ -83,7 +84,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.name is None and args.top is None:
-        name, top = NETLIST_FILES[0]
+        name, top = NETLIST_FILES[-1]
         name = NETLIST_PATH + name + ".json"
     elif args.name is None:
         print("Provide JSON filename with --input")

@@ -167,9 +167,9 @@ def find_readport(netlist: NetlistDatabase) -> dict[tuple[tuple[tuple[int]], tup
     # ((1, 2), (3, 4)) means q1, q2 -> rd1 & q3, q4 -> rd2
     readports = {}
     cur = netlist.cursor()
-    # width >= 8
+    # width >= 4
     # order by log(height) approximately
-    cur.execute("SELECT c, ss, dffe_type FROM qmux GROUP BY c, ss, dffe_type HAVING COUNT(*) >= 8 ORDER BY LENGTH(ss) DESC;")
+    cur.execute("SELECT c, ss, dffe_type FROM qmux GROUP BY c, ss, dffe_type HAVING COUNT(*) >= 4 ORDER BY LENGTH(ss) DESC;")
     groups = cur.fetchall()
     for c, ss, dffe_type in groups:
         # check whether ss is a subset of existing readports
