@@ -113,291 +113,54 @@ def saturate_2_1_mux(netlist: NetlistDatabase) -> int:
     netlist.commit()
     return cur.rowcount
 
-def find_single_dffe_by_q(netlist, w: int) -> tuple[int, int, int] | None:
-    # returns (d, c, e) if found
-    cur = netlist.cursor()
-    dffe = None
-    cur.execute("SELECT d, c, e FROM dffe_xx WHERE q = ? LIMIT 1;", (w,))
-    res = cur.fetchone()
-    if res:
-        return res
-    
-    cur.execute("SELECT input FROM selector WHERE output = ?;", (w,))
-    res = cur.fetchall()
-    if not res:
-        return None
-    for (input,) in res:
-        dffe1 = find_single_dffe_by_q(netlist, input)
-        if not dffe:
-            dffe = dffe1
-        elif dffe != dffe1:
-            return None
-    return dffe
-
-
-def saturate_readport(netlist) -> list:
-    cur = netlist.cursor()
-    cur.execute(
-        """
-        SELECT a, width
-        FROM binary_gate JOIN wire ON id = b
-        WHERE type = "$_MUX_" AND width >= 4
-        GROUP BY a, width
-        HAVING COUNT(*) >= 4;
-        """
-    )
-    aws = cur.fetchall()
-    if not aws:
-        return 0
-    ports = []
-    for a, w in aws:
-        cur.execute(
-            "SELECT b, y FROM binary_gate JOIN wire ON id = b WHERE a = ? AND type = \"$_MUX_\" AND width = ?;",
-            (a, w)
-        )
-        bys = cur.fetchall()
-        if not bys:
-            continue
-        # find the selectors
-        selectors = None
-        ys = []
-        for b, y in bys:
-            q = find_single_selector_by_output(netlist, b)
-            if not q:
-                continue
-            else:
-                ys.append(y)
-                if not selectors:
-                    selectors = q
-                elif selectors != q:
-                    break
-        if selectors and len(selectors) == w:
-            ports.append((a, ys, selectors, w))
-    return ports
-
-def find_memory(netlist) -> dict:
-    readports = saturate_readport(netlist)
-    memories = {}   # qs -> ([(width, rd, ra)], [(wd, wes)])
-    for a, y, selectors, w in readports:
-        qs = tuple(selectors)
-        if qs in memories:
-            memories[qs][0].append((w, y, a))
-        else:
-            memories[qs] = ([(w, y, a)], [])
-
-    # find write ports
-    for qs in memories:
-        cur = netlist.cursor()
-        cur.execute(
-            """
-            SELECT d
-            FROM dffe_xx
-            WHERE q = ?
-            LIMIT 1;
-            """,
-            (qs[0],)
-        )
-        res = cur.fetchone()
-        if not res:
-            continue
-        cur.execute("SELECT input FROM concat WHERE output = ?;", (res[0],))
-        res = cur.fetchall()
-        if not res:
-            continue
-        wds = [input for (input,) in res]
-        wes = []
-        for q in qs:
-            cur.execute("SELECT e FROM dffe_xx WHERE q = ?;", (q,))
-            res = cur.fetchone()
-            if not res:
-                continue
-            wes.append(res[0])
-
-        memories[qs][1].append((wds, wes))
-
-    return memories
-
-
-def find_or_create_binary_gate(netlist, a: int, b: int, type: str) -> int:
-    cur = netlist.cursor()
-    cur.execute(
-        "SELECT y FROM binary_gate WHERE a = ? AND b = ? AND type = ?;",
-        (a, b, type)
-    )
-    res = cur.fetchone()
-    if res:
-        # print(f"Found binary gate {a} {b} {type} -> {res[0]}")
-        return res[0]
-    y = next(global_id)
-    cur.execute(
-        "INSERT INTO binary_gate VALUES (?, ?, ?, ?);",
-        (a, b, y, type)
-    )
-    cur.execute(
-        "INSERT INTO wire VALUES (?, 1);",
-        (y,)
-    )
-    return y
-
-
-def find_or_create_unary_gate(netlist, a: int, type: str) -> int:
-    cur = netlist.cursor()
-    cur.execute(
-        "SELECT y FROM unary_gate WHERE a = ? AND type = ?;",
-        (a, type)
-    )
-    res = cur.fetchone()
-    if res:
-        # print(f"Found unary gate {a} -> {res[0]}")
-        return res[0]
-    y = next(global_id)
-    cur.execute(
-        "INSERT INTO unary_gate VALUES (?, ?, ?);",
-        (a, y, type)
-    )
-    cur.execute(
-        "INSERT INTO wire VALUES (?, 1);",
-        (y,)
-    )
-    return y
-
-
-def create_write_port_from_wes(netlist, wes: list[int]) -> tuple[int, list[int]] | None:
-    """
-    It creates a write port and repairs the connections: use a reversed write port
-    """
-    wen, waddr, wes_bundle = next(global_id), next(global_id), next(global_id)
-    n = len(wes)
-    log_map = {2: 1, 4: 2, 8: 3, 16: 4, 32: 5, 64: 6, 128: 7, 256: 8, 512: 9, 1024: 10, 2048: 11, 4096: 12}
-    if n not in log_map:
-        return False
-    logn = log_map[n]
-    cur = netlist.cursor()
-    cur.executemany(
-        "INSERT INTO wire VALUES (?, ?);",
-        [(wen, 1), (waddr, logn), (wes_bundle, n)]
-    )
-    cur.executemany(
-        "INSERT INTO selector VALUES (?, ?, ?, ?);",
-        [(wes_bundle, wes[i], i, i) for i in range(n)]
-    )
-    cur.execute(
-        "INSERT INTO binary_gate VALUES (?, ?, ?, ?);",
-        (wen, waddr, wes_bundle, "$_WRITE_PORT_")
-    )
-
-    # create a reversed write port
-    # step 1: create wen := wes[0] + wes[1] + ... + wes[n-1]
-    # reduction tree
-    ys = list(wes)
-    for _ in range(1, logn):
-        new_ys = []
-        j = 0
-        while j < len(ys):
-            if j + 1 < len(ys):
-                y = find_or_create_binary_gate(netlist, ys[j], ys[j + 1], "$_OR_")
-                new_ys.append(y)
-            j += 2
-        ys = new_ys
-    # the final or gate
-    a, b = ys
-    cur.execute(
-        "INSERT OR IGNORE INTO binary_gate VALUES (?, ?, ?, ?);",
-        (a, b, wen, "$_OR_")
-    )
-    # step 2: create waddr
-    # waddr[0] := wes[0]' wes[2]' wes[4]' ...
-    # waddr[1] := wes[0]' wes[1]' wes[4]' ...
-    # waddr[2] := wes[0]' wes[1]' wes[2]' ...
-    # ...
-    # create inverters
-    invs = []
-    for we in wes:
-        invs.append(find_or_create_unary_gate(netlist, we, "$_NOT_"))
-
-    # reduction trees
-    waddrs = []
-    for i in range(0, logn):    # build waddr[i]
-        invs_to_bundle = list(zip(*[iter(invs)] * (2 ** i)))[::2]
-        ands = []
-        for invs_bundle in invs_to_bundle:
-            ands.extend(invs_bundle)
-        while len(ands) > 1:
-            new_ands = []
-            for j in range(0, len(ands), 2):
-                a, b = ands[j], ands[j + 1]
-                new_ands.append(find_or_create_binary_gate(netlist, a, b, "$_AND_"))
-            ands = new_ands
-        waddrs.append(ands[0])
-
-    # step 3: bundle waddrs
-    # cur.executemany(
-    #     "INSERT INTO concat VALUES (?, ?, ?, ?);",
-    #     [(waddrs[i], waddr, i, i) for i in range(logn)]
-    # )
-    # netlist.commit()
-
-    return wen, waddrs
-
-
-# We can only consider muxes that are connected (directly or indirectly) to dffes
-
+# We can only consider muxes that are connected (directly or indirectly) to dffes.
+# NOTE: Write port is now extracted heuristically instead of repairing.
 def rewrite_mux_to_qmux(netlist: NetlistDatabase) -> int:
-    # qmux is a mux with inputs connected (directly) to dffes
-    # we can safely remove the original mux
+    # Qmux is a mux with inputs connected (directly) to dffes.
+    # We can safely remove the original mux.
     cur = netlist.cursor()
-    cur.execute(
-        """
+    cur.execute("""
         SELECT mux.a, mux.b, mux.s, mux.y, d1.c, d1.type
         FROM mux JOIN dffe_xx AS d1 JOIN dffe_xx AS d2
         ON a = d1.q AND b = d2.q AND d1.c = d2.c AND d1.type = d2.type;
-        """
-    )
-    patterns = cur.fetchall()
-    if not patterns:
+    """)
+    res = cur.fetchall()
+    if not res:
         return 0
     qmuxes = [
         (c, json.dumps([a, b]), json.dumps([s]), y, dffe_type)
-        for a, b, s, y, c, dffe_type in patterns
+        for a, b, s, y, c, dffe_type in res
     ]
     cur.executemany("INSERT INTO qmux VALUES (?, ?, ?, ?, ?);", qmuxes)
     cur.executemany(
         "DELETE FROM mux WHERE a = ? AND b = ? AND s = ?;",
-        [(a, b, s) for a, b, s, _, _, _ in patterns]
+        [(a, b, s) for a, b, s, _, _, _ in res]
     )
     netlist.commit()
-    # print(qmuxes)
     return cur.rowcount
 
-
 def reduce_qmux_once(netlist: NetlistDatabase) -> int:
-    # this keeps the original qmuxes
+    # NOTE: This function keeps the original qmuxes.
     cur = netlist.cursor()
-    cur.execute(
-        """
+    cur.execute("""
         SELECT qm1.qs, qm2.qs, qm1.ss, mux.s, mux.y, qm1.c, qm1.dffe_type
         FROM qmux AS qm1 JOIN qmux AS qm2 JOIN mux
         ON qm1.c = qm2.c AND qm1.ss = qm2.ss AND qm1.y = mux.a AND qm2.y = mux.b AND qm1.dffe_type = qm2.dffe_type;
-        """
-    )
-    patterns = cur.fetchall()
-    if not patterns:
+    """)
+    res = cur.fetchall()
+    if not res:
         return 0
     qmuxes = []
-    for qs1, qs2, ss, s, y, c, dffe_type in patterns:
+    for qs1, qs2, ss, s, y, c, dffe_type in res:
         qs1, qs2, ss = json.loads(qs1), json.loads(qs2), json.loads(ss)
-        qmuxes.append(
-            (c, json.dumps(qs1 + qs2), json.dumps(ss + [s]), y, dffe_type)
-        )
+        qmuxes.append((c, json.dumps(qs1 + qs2), json.dumps(ss + [s]), y, dffe_type))
     cur.executemany("INSERT OR IGNORE INTO qmux VALUES (?, ?, ?, ?, ?);", qmuxes)
     netlist.commit()
     return cur.rowcount
 
-
-def contains(a: tuple, b: tuple) -> bool:
-    # if a contains b
+def subset(a: tuple, b: tuple) -> bool:
+    # if b is a subset of a
     return all(x in a for x in b)
-
 
 def find_readport(netlist: NetlistDatabase) -> dict[tuple[tuple[tuple[int]], tuple[int]], tuple[int]]:
     # (((q)), (ra)) -> (rd)
@@ -411,7 +174,7 @@ def find_readport(netlist: NetlistDatabase) -> dict[tuple[tuple[tuple[int]], tup
     for c, ss, dffe_type in groups:
         # check whether ss is a subset of existing readports
         ss_tuple = tuple(json.loads(ss))
-        if any(contains(ra, ss_tuple) for _, ra in readports.keys()):
+        if any(subset(ra, ss_tuple) for _, ra in readports.keys()):
             continue
         cur.execute("SELECT qs, y FROM qmux WHERE c = ? AND ss = ? AND dffe_type = ?;", (c, ss, dffe_type))
         patterns = cur.fetchall()
@@ -426,7 +189,7 @@ def find_memory(readports: dict[tuple[tuple[tuple[int]], tuple[int]], tuple[int]
     for (qs, ra), rd in readports.items():
         found = False
         for mqs in memories.keys():
-            if contains(mqs, qs):
+            if subset(mqs, qs):
                 memories[mqs].append((qs, rd, ra))
                 found = True
                 break
@@ -440,25 +203,6 @@ def find_d_e_from_q(netlist: NetlistDatabase, q: int) -> tuple[int, int] | None:
     cur.execute("SELECT d, e FROM dffe_xx WHERE q = ? LIMIT 1;", (q,))
     res = cur.fetchone()
     return res if res else None
-
-
-def create_writeport(netlist: NetlistDatabase, memories: dict[tuple[tuple[int]], list[tuple[tuple[int], tuple[int]]]]) -> dict[tuple[tuple[int]], tuple[int, tuple[int], tuple[int]]]:
-    writeports = {}
-    for qss in memories.keys():
-        # find the write enable signals (wes)
-        wes = [
-            find_d_e_from_q(netlist, q)[1]
-            for q in qss[0]
-        ]
-        wds = tuple(
-            find_d_e_from_q(netlist, qs[0])[0]
-            for qs in qss
-        )
-        # create a write port
-        wen, waddrs = create_write_port_from_wes(netlist, wes)
-        writeports[qss] = (wen, tuple(waddrs), wds)
-    return writeports
-
 
 # to support unbalanced muxes
 
@@ -543,87 +287,3 @@ def find_quasi_memory(netlist: NetlistDatabase) -> list:
         if len(ss) >= 256:
             memories.append((qss, ss, rd))
     return memories
-
-
-if __name__ == "__main__":
-
-    NETLIST_FILE = "elephant/tests/json/pico.json"
-
-    import time
-    import json
-    from . import db
-    start = time.time()
-    with open(NETLIST_FILE, "r") as f:
-        blif = json.load(f)
-    netlist = db.NetlistDatabase()
-    netlist.build_from_blif(blif, "picorv32", True)
-
-    cur = netlist.cursor()
-    cur.execute(
-        """
-        SELECT type, COUNT(*)
-        FROM binary_gate
-        GROUP BY type;
-        """
-    )
-    print(cur.fetchall())
-
-    # process
-    rewrite_dffe_pn_to_pp(netlist)
-    group_dffe_pp(netlist)
-
-    updated = True
-    while updated:
-        updated = False
-        updated = True if saturate_comm(netlist, "$_AND_") > 0 else updated
-        updated = True if saturate_comm(netlist, "$_OR_") > 0 else updated
-        updated = True if saturate_demorgan(netlist, "$_AND_", "$_OR_") else updated
-        updated = True if saturate_demorgan(netlist, "$_OR_", "$_AND_") else updated
-        updated = True if saturate_idemp(netlist, "$_NOT_") else updated
-
-    # rewrite_andnot_to_and_not(netlist)
-    # saturate_comm(netlist, "$_AND_")
-    # saturate_comm(netlist, "$_OR_")
-    # while saturate_demorgan(netlist, "$_AND_", "$_OR_"):
-    #     pass
-    # while saturate_demorgan(netlist, "$_OR_", "$_AND_"):
-    #     pass
-    # while saturate_idemp(netlist):
-    #     pass
-
-    saturate_1_2_demux(netlist)
-    saturate_2_1_mux(netlist)
-    rewrite_2_1_mux_to_binary_gate(netlist)
-
-    cur.execute(
-        """
-        SELECT type, COUNT(*)
-        FROM binary_gate
-        GROUP BY type;
-        """
-    )
-    print(cur.fetchall())
-
-    saturate_2_1_mux(netlist)
-    rewrite_2_1_mux_to_binary_gate(netlist)
-    while reduce_mux_once(netlist):
-        pass
-
-
-    mems = find_memory(netlist)
-    for mem, (readports, writeports) in mems.items():
-        print(f"Memory {mem}:")
-        for i, (w, y, a) in enumerate(readports):
-            print(f"Read port {i}:")
-            print(f"\twidth: {w}")
-            print(f"\tread data wires: {y}")
-            print(f"\tread address wire: {a}")
-        for i, (wds, wes) in enumerate(writeports):
-            print(f"Write port {i}:")
-            print(f"\twidth: {len(wds)}")
-            print(f"\twrite data wires: {wds}")
-            print(f"\twrite enable wires: {wes}")
-            create_write_port_from_wes(netlist, wes)
-        print("--------------------")
-
-    print("Total time:", time.time() - start)
