@@ -29,7 +29,17 @@ def test_extract_memory(netlist: db.NetlistDatabase, verbose: bool = False):
     print("Reduced all qmuxes")
     rps = rewriter.find_readport(netlist)
     time_elapsed = time.time() - start
-    print(f"Found {len(rps)} read port(s)")
+    print(f"Found {len(rps)} read port(s):")
+    for (qss, ra), rd in rps.items():
+        print(f"\tMemory: width = {len(qss)}, height = {len(qss[0])}")
+        if verbose:
+            print(f"\t\tRegisters: {qss[0]}")
+            print(f"\t\tRead address: {ra}")
+            print(f"\t\tRead data: {rd}")
+        else:
+            print(f"\t\tRegisters: {qss[0][:5]}" + ("..." if len(qss[0]) > 5 else ""))
+            print(f"\t\tRead address: {ra[:5]}" + ("..." if len(ra) > 5 else ""))
+            print(f"\t\tRead data: {rd[:5]}" + ("..." if len(rd) > 5 else ""))
     print(f"Time elapsed: {time_elapsed:.2f}s")
 
 def test_extract_quasi_memory(netlist: db.NetlistDatabase, verbose: bool = False):
