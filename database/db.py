@@ -101,7 +101,6 @@ class NetlistDatabase(sqlite3.Connection):
         max_id = cur.fetchone()[0]
         return 2 if max_id is None else max_id + 1
 
-
     def extract_mems(self):
         times = []
         # saturate
