@@ -7,562 +7,111 @@ if TYPE_CHECKING:
     from .db import NetlistDatabase
 
 
-MAGIC_NUMBER = 10000000
-def id_generator():
-    i = MAGIC_NUMBER
-    while True:
-        yield i
-        i += 1
-global_id = id_generator()
-
-
-def rewrite_dffe_pn_to_pp(netlist) -> bool:
+def rewrite_dffe_pn_to_pp(netlist: NetlistDatabase) -> bool:
     cur = netlist.cursor()
-    cur.execute(
-        """
+    cur.execute("""
         SELECT d, c, e, q
         FROM dffe_xx
         WHERE type = "$_DFFE_PN_";
-        """
-    )
-    dceqs = cur.fetchall()
-    if not dceqs:
+    """)
+    res = cur.fetchall()
+    if not res:
         return False
-
-    for d, c, e, q in dceqs:
+    i = netlist.get_next_id()
+    for d, c, e, q in res:
         # check whether !e exists
-        cur.execute(
-            "SELECT y FROM unary_gate WHERE a = ? AND type = \"$_NOT_\";",
-            (e,)
-        )
+        cur.execute("SELECT y FROM unary_gate WHERE a = ? AND type = \"$_NOT_\";", (e,))
         yt = cur.fetchone()
         if yt:
             ne = yt[0]
-        else:
-            ne = next(global_id)
-            cur.execute(
-                "INSERT INTO unary_gate VALUES (?, ?, ?);",
-                (e, ne, "$_NOT_")
-            )
-            cur.execute(
-                "INSERT INTO wire VALUES (?, 1);",
-                (ne,)
-            )
+        else:   # !e does not exist, create it
+            ne = i
+            i += 1
+            cur.execute("INSERT INTO unary_gate VALUES (?, ?, ?);", (e, ne, "$_NOT_"))
+            cur.execute("INSERT INTO wire VALUES (?, 1);", (ne,))
         # update the dffe_pn to dffe_pp
-        cur.execute(
-            """
+        cur.execute("""
             UPDATE dffe_xx
             SET type = "$_DFFE_PP_", e = ?
             WHERE type = "$_DFFE_PN_" AND d = ? AND c = ? AND e = ? AND q = ?;
-            """,
-            (ne, d, c, e, q)
+            """, (ne, d, c, e, q)
         )
     netlist.commit()
     return True
 
-
-def group_dffe_pp(netlist) -> bool:
-    """
-    Based on the fact that all DFF groups are disjoint,
-    we can group all of them in one go.
-    """
+def saturate_comm(netlist: NetlistDatabase, target_type: str) -> int:
+    # It finds all commutative binary gates and saturates them.
     cur = netlist.cursor()
-    cur.execute(
-        """
-        SELECT c, e
-        FROM dffe_xx
-        GROUP BY c, e
-        HAVING COUNT(*) > 1;
-        """
-    )
-    ces = cur.fetchall()
-    if not ces:
-        return False
-    for c, e in ces:
-        cur.execute(
-            """
-            SELECT d, q, wire.width as width
-            FROM dffe_xx JOIN wire ON d = wire.id
-            WHERE c = ? AND e = ?;
-            """,
-            (c, e)
-        )
-        dqs: list[tuple[int, int]] = cur.fetchall()
-        # print(dqs)
-
-        # remove the dffs
-        cur.execute(
-            """
-            DELETE FROM dffe_xx
-            WHERE c = ? AND e = ?;
-            """,
-            (c, e)
-        )
-
-        concat_output, selectors_input = next(global_id), next(global_id)
-        wi, concats, selectors = 0, [], []
-        for d, q, width in dqs:
-            concats.append((d, concat_output, wi, wi + width - 1))
-            selectors.append((selectors_input, q, wi, wi + width - 1))
-            wi += width
-        # construct a concat
-        cur.executemany(
-            "INSERT INTO concat VALUES (?, ?, ?, ?);",
-            concats
-        )
-        # construct a selector
-        cur.executemany(
-            "INSERT INTO selector VALUES (?, ?, ?, ?);",
-            selectors
-        )
-        # construct two wires
-        cur.executemany(
-            "INSERT INTO wire VALUES (?, ?);",
-            [(concat_output, wi), (selectors_input, wi)]
-        )
-        # construct a dff
-        cur.execute(
-            "INSERT INTO dffe_xx VALUES (?, ?, ?, ?, ?);",
-            (concat_output, c, e, selectors_input, "$_DFFE_PP_")
-        )
-    netlist.commit()
-    return True
-
-
-def saturate_comm(netlist, target: str) -> int:
-    """
-    It finds all commutative binary gates
-    and saturates them
-    """
-    cur = netlist.cursor()
-    cur.execute(
-        """
+    cur.execute("""
         SELECT b, a, y, type
         FROM binary_gate
         WHERE type = ?;
-        """,
-        (target,)
+        """, (target_type,)
     )
-    bayts = cur.fetchall()
-    if not bayts:
-        return 0
-    cur.executemany(
-        "INSERT OR IGNORE INTO binary_gate VALUES (?, ?, ?, ?);",
-        bayts
-    )
+    res = cur.fetchall()
+    cur.executemany("INSERT OR IGNORE INTO binary_gate VALUES (?, ?, ?, ?);", res)
     netlist.commit()
     return cur.rowcount
 
-
-def merge_equiv_wires(netlist, rhs: int, lhs: int):
-    """
-    It merges two equivalent wires
-    lhs := rhs
-    """
+def saturate_demorgan(netlist: NetlistDatabase, target_type: str, to_type: str) -> bool:
+    # It finds the pattern: !(a & b) -> !a | !b. One at a time.
     cur = netlist.cursor()
-    # update all inputs
-    for table, ports in netlist.PORTS.items():
-        for port in ports:
-            try:
-                cur.execute(
-                    f"""
-                    UPDATE {table}
-                    SET {port} = ?
-                    WHERE {port} = ?;
-                    """,
-                    (rhs, lhs)
-                )
-            except sqlite3.IntegrityError:
-                # For now we ignore integrity errors
-                # It involves recursive wire merging
-                print(f"Integrity error in {table} {port}")
-    # delete wire b
-    cur.execute(
-        "DELETE FROM wire WHERE id = ?;",
-        (lhs,)
-    )
-    netlist.commit()
-
-
-def saturate_idemp(netlist, target: str = "$_NOT_") -> bool:
-    """
-    It finds a pair of idempotent unary gates
-    and saturates it
-    """
-    cur = netlist.cursor()
-    cur.execute(
-        """
-        SELECT ug1.a, ug2.y
-        FROM unary_gate AS ug1 JOIN unary_gate AS ug2
-        ON ug1.y = ug2.a
-        WHERE ug1.type = ? AND ug2.type = ? AND ug1.a != ug2.y
-        LIMIT 1;
-        """,
-        (target, target)
-    )
-    ay = cur.fetchone()
-    if not ay:
-        return False
-    a, y = ay
-    # very costly
-    merge_equiv_wires(netlist, a, y)
-    return True
-
-
-def saturate_demorgan(netlist, target: str, to: str) -> bool:
-    """
-    It finds the pattern: !(a & b) -> !a | !b
-    """
-    cur = netlist.cursor()
-    cur.execute(
-        """
+    cur.execute("""
         SELECT bg.a, bg.b, bg.y
         FROM binary_gate AS bg JOIN unary_gate AS ug
         ON bg.y = ug.a
         WHERE bg.type = ? AND ug.type = ?
         LIMIT 1;
-        """,
-        (target, "$_NOT_")
+        """, (target_type, "$_NOT_")
     )
-    aby = cur.fetchone()
-    if not aby:
+    res = cur.fetchone()
+    if not res:
         return False
-    a, b, y = aby
+    i = netlist.get_next_id()
+    a, b, y = res
     # check whether !a already exists
-    cur.execute(
-        "SELECT y FROM unary_gate WHERE a = ? AND type = ?;",
-        (a, "$_NOT_")
-    )
+    cur.execute("SELECT y FROM unary_gate WHERE a = ? AND type = ?;", (a, "$_NOT_"))
     yt = cur.fetchone()
     if yt:
         na = yt[0]
     else:
-        na = next(global_id)
-        cur.execute(
-            "INSERT INTO unary_gate VALUES (?, ?, ?);",
-            (a, na, "$_NOT_")
-        )
-        cur.execute(
-            "INSERT INTO wire VALUES (?, 1);",
-            (na,)
-        )
+        na = i
+        i += 1
+        cur.execute("INSERT INTO unary_gate VALUES (?, ?, ?);", (a, na, "$_NOT_"))
+        cur.execute("INSERT INTO wire VALUES (?, 1);", (na,))
     # check whether !b already exists
-    cur.execute(
-        "SELECT y FROM unary_gate WHERE a = ? AND type = ?;",
-        (b, "$_NOT_")
-    )
+    cur.execute("SELECT y FROM unary_gate WHERE a = ? AND type = ?;", (b, "$_NOT_"))
     yt = cur.fetchone()
     if yt:
         nb = yt[0]
     else:
-        nb = next(global_id)
-        cur.execute(
-            "INSERT INTO unary_gate VALUES (?, ?, ?);",
-            (b, nb, "$_NOT_")
-        )
-        cur.execute(
-            "INSERT INTO wire VALUES (?, 1);",
-            (nb,)
-        )
+        nb = i
+        cur.execute("INSERT INTO unary_gate VALUES (?, ?, ?);", (b, nb, "$_NOT_"))
+        cur.execute("INSERT INTO wire VALUES (?, 1);", (nb,))
     # check whether the output already exists
-    cur.execute(
-        "SELECT y FROM binary_gate WHERE a = ? AND b = ? AND type = ?;",
-        (na, nb, to)
-    )
+    cur.execute("SELECT y FROM binary_gate WHERE a = ? AND b = ? AND type = ?;", (na, nb, to_type))
     yt = cur.fetchone()
     if yt:
         return False
     else:
         # construct a new or
-        cur.execute(
-            "INSERT INTO binary_gate VALUES (?, ?, ?, ?);",
-            (na, nb, y, to)
-        )
+        cur.execute("INSERT INTO binary_gate VALUES (?, ?, ?, ?);", (na, nb, y, to_type))
     netlist.commit()
     return True
 
-
-def saturate_2_1_mux(netlist) -> int:
-    """
-    It finds the pattern: s'a + sb
-    """
+def saturate_2_1_mux(netlist: NetlistDatabase) -> int:
+    # It finds the pattern: s'a + sb.
     cur = netlist.cursor()
-    cur.execute(
-        """
+    cur.execute("""
         SELECT and1.b, and2.b, and2.a, or1.y
         FROM binary_gate AS and1 JOIN binary_gate AS and2 JOIN binary_gate AS or1 JOIN unary_gate AS not1
         ON and1.a = not1.y AND and2.a = not1.a AND or1.a = and1.y AND or1.b = and2.y
         WHERE and1.type = "$_AND_" AND and2.type = "$_AND_" AND or1.type = "$_OR_" AND not1.type = "$_NOT_"
-        """
-    )
-    absys = cur.fetchall()
-    if not absys:
-        return 0
-    cur.executemany(
-        "INSERT OR IGNORE INTO mux VALUES (?, ?, ?, ?);",
-        absys
-    )
+    """)
+    res = cur.fetchall()
+    cur.executemany("INSERT OR IGNORE INTO mux VALUES (?, ?, ?, ?);", res)
     netlist.commit()
     return cur.rowcount
-
-
-def rewrite_2_1_mux_to_binary_gate(netlist) -> bool:
-    cur = netlist.cursor()
-    cur.execute(
-        """
-        SELECT a, b, s, y
-        FROM mux
-        """
-    )
-    absys = cur.fetchall()
-    if not absys:
-        return False
-    for a, b, s, y in absys:
-        # check whether concat(a, b) exists
-        cur.execute(
-            """
-            SELECT c1.output
-            FROM concat AS c1 JOIN concat AS c2 JOIN wire AS w1
-            ON c1.output = c2.output AND c1.output = w1.id
-            WHERE c1.input = ? AND c2.input = ? AND c1.left = 0 AND c1.right = 0 AND c2.left = 1 AND c2.right = 1 AND w1.width = 2
-            LIMIT 1;
-            """,
-            (a, b)
-        )
-        output = cur.fetchone()
-        if output:
-            ab = output[0]
-        else:
-            ab = next(global_id)
-            cur.execute(
-                "INSERT INTO concat VALUES (?, ?, 0, 0);",
-                (a, ab)
-            )
-            cur.execute(
-                "INSERT INTO concat VALUES (?, ?, 1, 1);",
-                (b, ab)
-            )
-            cur.execute(
-                "INSERT INTO wire VALUES (?, 2);",
-                (ab,)
-            )
-        cur.execute(
-            "INSERT OR IGNORE INTO binary_gate VALUES (?, ?, ?, ?);",
-            (s, ab, y, "$_MUX_")
-        )
-    # cur.execute("DELETE FROM mux;")
-    netlist.commit()
-    return True
-
-
-def find_concat(netlist, a: int, b: int) -> int | None:
-    """
-    It finds the concat(a, b)
-    """
-    cur = netlist.cursor()
-    cur.execute(
-        """
-        SELECT c1.output
-        FROM concat AS c1 JOIN concat AS c2 JOIN wire AS w1 JOIN wire AS w2 JOIN wire AS w3
-        ON c1.output = c2.output AND c1.input = w1.id AND c2.input = w2.id AND c1.output = w3.id
-        WHERE c1.input = ? AND c2.input = ? AND c1.left = 0 AND w3.width = w1.width + w2.width
-        LIMIT 1;
-        """,
-        (a, b)
-    )
-    res = cur.fetchone()
-    return res[0] if res else None
-
-
-def reduce_mux(netlist) -> bool:
-    """
-    The mux should be in form of binary gate!
-    """
-    cur = netlist.cursor()
-    cur.execute(
-        """
-        SELECT mux1.a, mux1.b, mux2.b, mux3.a, mux3.y
-        FROM binary_gate AS mux1 JOIN binary_gate AS mux2 JOIN binary_gate AS mux3 JOIN concat AS c1 JOIN concat AS c2 JOIN wire AS w1 JOIN wire AS w3 JOIN wire AS w4
-        ON mux1.a = mux2.a AND mux1.y = w1.id AND mux3.b = w3.id AND mux1.y = c1.input AND mux2.y = c2.input AND mux3.a = w4.id
-        WHERE mux1.type = "$_MUX_" AND mux2.type = "$_MUX_" AND mux3.type = "$_MUX_" AND c1.output = mux3.b AND c1.left = 0 AND c2.output = mux3.b AND w3.width = 2 * w1.width AND w4.width = 1;
-        """
-    )
-    sabtys = cur.fetchall()
-    if not sabtys:
-        return False
-    updated = False
-    for s, a, b, t, y in sabtys:
-        # check whether concat(a, b) exists
-        ab = find_concat(netlist, a, b)
-        if not ab:
-            ab = next(global_id)
-            cur.execute(
-                "SELECT width FROM wire WHERE id = ?;",
-                (a,)
-            )
-            wa = cur.fetchone()[0]
-            cur.execute(
-                "SELECT width FROM wire WHERE id = ?;",
-                (b,)
-            )
-            wb = cur.fetchone()[0]
-            cur.execute(
-                "INSERT INTO concat VALUES (?, ?, 0, ?);",
-                (a, ab, wa - 1)
-            )
-            cur.execute(
-                "INSERT INTO concat VALUES (?, ?, ?, ?);",
-                (b, ab, wa, wa + wb - 1)
-            )
-            cur.execute(
-                "INSERT INTO wire VALUES (?, ?);",
-                (ab, wa + wb)
-            )
-        st = find_concat(netlist, s, t)
-        if not st:
-            st = next(global_id)
-            cur.execute(
-                "SELECT width FROM wire WHERE id = ?;",
-                (s,)
-            )
-            ws = cur.fetchone()[0]
-            cur.execute(
-                "INSERT INTO concat VALUES (?, ?, 0, ?);",
-                (s, st, ws - 1)
-            )
-            cur.execute(
-                "INSERT INTO concat VALUES (?, ?, ?, ?);",
-                (t, st, ws, ws)
-            )
-            cur.execute(
-                "INSERT INTO wire VALUES (?, ?);",
-                (st, ws + 1)
-            )
-        cur.execute(
-            "INSERT OR IGNORE INTO binary_gate VALUES (?, ?, ?, ?);",
-            (st, ab, y, "$_MUX_")
-        )
-        if cur.rowcount > 0:
-            updated = True
-    netlist.commit()
-    return updated
-
-
-def reduce_mux_once(netlist) -> bool:
-    cur = netlist.cursor()
-    cur.execute(
-        """
-        SELECT mux1.a, mux1.b, mux2.b, mux3.a, mux3.y
-        FROM binary_gate AS mux1 JOIN binary_gate AS mux2 JOIN binary_gate AS mux3 JOIN concat AS c1 JOIN concat AS c2 JOIN wire AS w1 JOIN wire AS w3 JOIN wire AS w4
-        ON mux1.a = mux2.a AND mux1.y = w1.id AND mux3.b = w3.id AND mux1.y = c1.input AND mux2.y = c2.input AND mux3.a = w4.id
-        WHERE mux1.type = "$_MUX_" AND mux2.type = "$_MUX_" AND mux3.type = "$_MUX_" AND c1.output = mux3.b AND c1.left = 0 AND c2.output = mux3.b AND w3.width = 2 * w1.width AND w4.width = 1 AND mux1.b != mux2.b
-        LIMIT 1;
-        """
-    )
-    sabty = cur.fetchone()
-    if not sabty:
-        return False
-    s, a, b, t, y = sabty
-    # check whether concat(a, b) exists
-    ab = find_concat(netlist, a, b)
-    if not ab:
-        ab = next(global_id)
-        cur.execute(
-            "SELECT width FROM wire WHERE id = ?;",
-            (a,)
-        )
-        wa = cur.fetchone()[0]
-        cur.execute(
-            "SELECT width FROM wire WHERE id = ?;",
-            (b,)
-        )
-        wb = cur.fetchone()[0]
-        cur.execute(
-            "INSERT INTO concat VALUES (?, ?, 0, ?);",
-            (a, ab, wa - 1)
-        )
-        cur.execute(
-            "INSERT INTO concat VALUES (?, ?, ?, ?);",
-            (b, ab, wa, wa + wb - 1)
-        )
-        cur.execute(
-            "INSERT INTO wire VALUES (?, ?);",
-            (ab, wa + wb)
-        )
-    st = find_concat(netlist, s, t)
-    if not st:
-        st = next(global_id)
-        cur.execute(
-            "SELECT width FROM wire WHERE id = ?;",
-            (s,)
-        )
-        ws = cur.fetchone()[0]
-        cur.execute(
-            "INSERT INTO concat VALUES (?, ?, 0, ?);",
-            (s, st, ws - 1)
-        )
-        cur.execute(
-            "INSERT INTO concat VALUES (?, ?, ?, ?);",
-            (t, st, ws, ws)
-        )
-        cur.execute(
-            "INSERT INTO wire VALUES (?, ?);",
-            (st, ws + 1)
-        )
-    cur.executemany(
-        "DELETE FROM binary_gate WHERE a = ? AND b = ? AND type = ?;",
-        [(s, a, "$_MUX_"), (s, b, "$_MUX_"), (t, ab, "$_MUX_")]
-    )
-    cur.execute(
-        "INSERT OR IGNORE INTO binary_gate VALUES (?, ?, ?, ?);",
-        (st, ab, y, "$_MUX_")
-    )
-    netlist.commit()
-    return cur.rowcount > 0
-
-
-def find_selectors_by_output(netlist, out: int) -> list[tuple[int, int]] | None:
-    # returns (input, index) if all inputs are found
-    cur = netlist.cursor()
-    cur.execute("SELECT input, left FROM selector WHERE output = ?;", (out,))
-    res = cur.fetchone()
-    if res:
-        return [res]
-    cur.execute("SELECT input FROM concat WHERE output = ?;", (out,))
-    res = cur.fetchall()
-    if not res:
-        return None # not a concat, fail
-    inputs = []
-    for (input,) in res:
-        inputs2 = find_selectors_by_output(netlist, input)
-        if not inputs2:
-            return None # one of the inputs is not a selector, fail
-        inputs.extend(inputs2)
-    return inputs
-
-
-def find_single_selector_by_output(netlist, w: int) -> list[int]:
-    # returns input if found
-    cur = netlist.cursor()
-    cur.execute("SELECT input FROM selector WHERE output = ? LIMIT 1;", (w,))
-    res = cur.fetchone()
-    if res:
-        # print(f"{w} is from selector: {res[0]}")
-        return [res[0]]
-    cur.execute("SELECT input FROM concat WHERE output = ?;", (w,))
-    res = cur.fetchall()
-    if not res:
-        # print(f"{w} is not a concat")
-        return None
-    # print(f"{w} = concat({res})")
-    inputs = []
-    for (input1,) in res:
-        input2 = find_single_selector_by_output(netlist, input1)
-        if not input2:
-            return None
-        inputs.extend(input2)
-    return inputs
-
 
 def find_single_dffe_by_q(netlist, w: int) -> tuple[int, int, int] | None:
     # returns (d, c, e) if found
@@ -625,117 +174,6 @@ def saturate_readport(netlist) -> list:
         if selectors and len(selectors) == w:
             ports.append((a, ys, selectors, w))
     return ports
-
-
-def saturate_1_2_demux(netlist) -> int:
-    """
-    It finds the pattern: {xs', xs} -> demux(x, s)
-    """
-    cur = netlist.cursor()
-    cur.execute(
-        """
-        SELECT and1.a, and1.b, and1.y, and2.y
-        FROM binary_gate AS and1 JOIN binary_gate AS and2 JOIN unary_gate AS not1
-        ON and1.a = and2.a AND and1.b = not1.a AND and2.b = not1.y
-        WHERE and1.type = "$_AND_" AND and2.type = "$_AND_" AND not1.type = "$_NOT_" AND and1.a != and1.b
-        """
-    )
-    xsyys = cur.fetchall()
-    if not xsyys:
-        return 0
-    demuxes = []
-    selectors = []
-    for x, s, y1, y2 in xsyys:
-        output = next(global_id)
-        demux = (x, s, output, "$_DEMUX_")
-        demuxes.append(demux)
-        selectors.append((output, y1, y2))
-
-    cur.executemany(
-        "INSERT INTO wire VALUES (?, 2);",
-        ((selector[0],) for selector in selectors)
-    )
-    cur.executemany(
-        "INSERT INTO binary_gate VALUES (?, ?, ?, ?);",
-        demuxes
-    )
-    cur.executemany(
-        "INSERT INTO selector VALUES (?, ?, 0, 0);",
-        ((selector[0], selector[1]) for selector in selectors)
-    )
-    cur.executemany(
-        "INSERT INTO selector VALUES (?, ?, 1, 1);",
-        ((selector[0], selector[2]) for selector in selectors)
-    )
-    netlist.commit()
-    return len(demuxes)
-
-
-# def saturate_1_2_demux(netlist) -> int:
-#     """
-#     It finds the pattern: {xs', xs} -> demux(x, s)
-#     """
-#     cur = netlist.cursor()
-#     cur.execute(
-#         """
-#         SELECT andnot.a, andnot.b, andnot.y, and1.y
-#         FROM binary_gate AS andnot JOIN binary_gate AS and1
-#         ON andnot.a = and1.a AND andnot.b = and1.b
-#         WHERE andnot.type = "$_ANDNOT_" AND and1.type = "$_AND_" AND andnot.a != andnot.b
-#         """
-#     )
-#     xsyys = cur.fetchall()
-#     if not xsyys:
-#         return 0
-#     demuxes = []
-#     selectors = []
-#     for x, s, y1, y2 in xsyys:
-#         output = next(global_id)
-#         demux = (x, s, output, "$_DEMUX_")
-#         demuxes.append(demux)
-#         selectors.append((output, y1, y2))
-
-#     cur.executemany(
-#         "INSERT INTO wire VALUES (?, 2);",
-#         ((selector[0],) for selector in selectors)
-#     )
-#     cur.executemany(
-#         "INSERT INTO binary_gate VALUES (?, ?, ?, ?);",
-#         demuxes
-#     )
-#     cur.executemany(
-#         "INSERT INTO selector VALUES (?, ?, 0, 0);",
-#         ((selector[0], selector[1]) for selector in selectors)
-#     )
-#     cur.executemany(
-#         "INSERT INTO selector VALUES (?, ?, 1, 1);",
-#         ((selector[0], selector[2]) for selector in selectors)
-#     )
-#     netlist.commit()
-#     return len(demuxes)
-
-
-def rewrite_andnot_to_and_not(netlist) -> int:
-    cur = netlist.cursor()
-    cur.execute("SELECT a, b, y FROM binary_gate WHERE type = \"$_ANDNOT_\"")
-    abys = cur.fetchall()
-    if not abys:
-        return 0
-    for a, b, y in abys:
-        # check whether !b already exists
-        cur.execute("SELECT y FROM unary_gate WHERE a = ? AND type = \"$_NOT_\" LIMIT 1;", (b,))
-        res = cur.fetchone()
-        if res:
-            nb = res[0]
-        else:
-            nb = next(global_id)
-            cur.execute("INSERT INTO unary_gate VALUES (?, ?, ?);", (b, nb, "$_NOT_"))
-            cur.execute("INSERT INTO wire VALUES (?, 1);", (nb,))
-        cur.execute("INSERT INTO binary_gate VALUES (?, ?, ?, ?);", (a, nb, y, "$_AND_"))
-    cur.execute("DELETE FROM binary_gate WHERE type = \"$_ANDNOT_\"")
-    netlist.commit()
-    return cur.rowcount
-
 
 def find_memory(netlist) -> dict:
     readports = saturate_readport(netlist)

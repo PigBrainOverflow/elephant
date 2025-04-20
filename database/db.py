@@ -9,6 +9,8 @@ from . import rewriter
 class NetlistDatabase(sqlite3.Connection):
     def _create_tables(self):
         cur = self.cursor()
+        # NOTE: Wire's id starts from 2.
+        # 0 and 1 are reserved for constant 0 and 1.
         cur.execute("""
             CREATE TABLE IF NOT EXISTS wire (
                 id INTEGER PRIMARY KEY,
@@ -78,19 +80,26 @@ class NetlistDatabase(sqlite3.Connection):
         self._create_tables()
 
     def build_from_json(self, netlist: dict, target_module: str, ignore_errors: bool = False):
-        self.target_blif = ["modules"][target_module]
-        netlist = formatter.blif_to_db(blif, target_module, ignore_errors)
-        wire_data = [(w["id"], w["width"]) for w in netlist["wires"] if type(w["id"]) == int]
-        binary_gate_data = [(g["a"], g["b"], g["y"], g["type"]) for g in netlist["binary_gates"]]
-        dffe_xx_data = [(d["d"], d["c"], d["e"], d["q"], d["type"]) for d in netlist["dffe_xxs"]]
-        unary_gate_data = [(u["a"], u["y"], u["type"]) for u in netlist["unary_gates"]]
-        mux_data = [(m["a"], m["b"], m["s"], m["y"]) for m in netlist["muxes"]]
+        module_data = formatter.json_to_db(netlist, target_module, ignore_errors=ignore_errors)
+        wire_data = [(w["id"], w["width"]) for w in module_data["wire"]]
+        binary_gate_data = [(g["a"], g["b"], g["y"], g["type"]) for g in module_data["binary_gate"]]
+        dffe_xx_data = [(d["d"], d["c"], d["e"], d["q"], d["type"]) for d in module_data["dffe_xx"]]
+        unary_gate_data = [(u["a"], u["y"], u["type"]) for u in module_data["unary_gate"]]
+        mux_data = [(m["a"], m["b"], m["s"], m["y"]) for m in module_data["mux"]]
 
-        insert_records(self, "wire", wire_data)
-        insert_records(self, "binary_gate", binary_gate_data)
-        insert_records(self, "dffe_xx", dffe_xx_data)
-        insert_records(self, "unary_gate", unary_gate_data)
-        insert_records(self, "mux", mux_data)
+        cur = self.cursor()
+        cur.executemany("INSERT INTO wire (id, width) VALUES (?, ?)", wire_data)
+        cur.executemany("INSERT INTO binary_gate (a, b, y, type) VALUES (?, ?, ?, ?)", binary_gate_data)
+        cur.executemany("INSERT INTO dffe_xx (d, c, e, q, type) VALUES (?, ?, ?, ?, ?)", dffe_xx_data)
+        cur.executemany("INSERT INTO unary_gate (a, y, type) VALUES (?, ?, ?)", unary_gate_data)
+        cur.executemany("INSERT INTO mux (a, b, s, y) VALUES (?, ?, ?, ?)", mux_data)
+        self.commit()
+
+    def get_next_id(self) -> int:
+        cur = self.cursor()
+        cur.execute("SELECT MAX(id) FROM wire")
+        max_id = cur.fetchone()[0]
+        return 2 if max_id is None else max_id + 1
 
 
     def extract_mems(self):
