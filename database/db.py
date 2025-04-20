@@ -71,14 +71,14 @@ class NetlistDatabase(sqlite3.Connection):
                 PRIMARY KEY (qs, ss, dffe_type)
             );
         """)
-        conn.commit()
+        self.commit()
 
     def __init__(self, db_path: str = ":memory:"):
         super().__init__(db_path)
         self._create_tables()
 
-    def build_from_blif(self, blif: dict, target_module: str, ignore_errors: bool = False):
-        self.target_blif = blif["modules"][target_module]
+    def build_from_json(self, netlist: dict, target_module: str, ignore_errors: bool = False):
+        self.target_blif = ["modules"][target_module]
         netlist = formatter.blif_to_db(blif, target_module, ignore_errors)
         wire_data = [(w["id"], w["width"]) for w in netlist["wires"] if type(w["id"]) == int]
         binary_gate_data = [(g["a"], g["b"], g["y"], g["type"]) for g in netlist["binary_gates"]]
