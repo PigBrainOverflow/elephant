@@ -6,6 +6,13 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .db import NetlistDatabase
 
+# auxiliary functions
+def subset(a: tuple, b: tuple) -> bool:
+    # if b is a subset of a
+    return all(x in a for x in b)
+
+def transpose(m) -> list:
+    return [[row[i] for row in m] for i in range(len(m[0]))]
 
 def rewrite_dffe_pn_to_pp(netlist: NetlistDatabase) -> bool:
     cur = netlist.cursor()
@@ -158,10 +165,6 @@ def reduce_qmux_once(netlist: NetlistDatabase) -> int:
     netlist.commit()
     return cur.rowcount
 
-def subset(a: tuple, b: tuple) -> bool:
-    # if b is a subset of a
-    return all(x in a for x in b)
-
 def find_readport(netlist: NetlistDatabase) -> dict[tuple[tuple[tuple[int]], tuple[int]], tuple[int]]:
     # (((q)), (ra)) -> (rd)
     # ((1, 2), (3, 4)) means q1, q2 -> rd1 & q3, q4 -> rd2
@@ -183,7 +186,6 @@ def find_readport(netlist: NetlistDatabase) -> dict[tuple[tuple[tuple[int]], tup
         readports[(qss, ss_tuple)] = rd
     return readports
 
-
 def find_memory(readports: dict[tuple[tuple[tuple[int]], tuple[int]], tuple[int]]) -> dict[tuple[tuple[int]], list[tuple[tuple[tuple[int]], tuple[int], tuple[int]]]]:
     memories = {}
     for (qs, ra), rd in readports.items():
@@ -197,93 +199,37 @@ def find_memory(readports: dict[tuple[tuple[tuple[int]], tuple[int]], tuple[int]
             memories[qs] = [(qs, rd, ra)]
     return memories
 
-
-def find_d_e_from_q(netlist: NetlistDatabase, q: int) -> tuple[int, int] | None:
+def find_writeport(netlist: NetlistDatabase, qs: tuple[tuple[int]]) -> tuple[int, tuple[int]] | None:
+    # It finds the write port of a memory if it exists.
+    # (we, wa)
+    dffes = []
     cur = netlist.cursor()
-    cur.execute("SELECT d, e FROM dffe_xx WHERE q = ? LIMIT 1;", (q,))
-    res = cur.fetchone()
-    return res if res else None
 
-# to support unbalanced muxes
+    # step 0: gather all dffes
+    for qq in qs:
+        tmp = []
+        for q in qq:
+            cur.execute("SELECT d, c, e FROM dffe_xx WHERE q = ?;", (q,))
+            d, c, e = cur.fetchone()
+            tmp.append((d, c, e, q))
+        dffes.append(tmp)
 
-def rewrite_mux_to_quasi_qmux(netlist: NetlistDatabase) -> int:
-    # quasi_qmux is a mux with inputs connected to dffes or quasi_qmuxes or 0
-    # we can safely remove the original mux
-    cur = netlist.cursor()
-    # add a const 0 dffe
-    cur.execute(
-        "INSERT OR IGNORE INTO dffe_xx VALUES (?, ?, ?, ?, ?);",
-        (0, 2, 0, 0, "$_DFFE_PP_")
-    )
-    cur.execute(
-        """
-        SELECT mux.a, mux.b, mux.s, mux.y, d1.c, d1.type
-        FROM mux JOIN dffe_xx AS d1 JOIN dffe_xx AS d2
-        ON a = d1.q AND b = d2.q AND d1.c = d2.c AND d1.type = d2.type;
-        """
-    )
-    patterns = cur.fetchall()
-    if not patterns:
-        return 0
-    quasi_qmuxes = [
-        (c, json.dumps([a, b]), json.dumps([s, None, None]), y, dffe_type)
-        for a, b, s, y, c, dffe_type in patterns
-    ]
-    cur.executemany("INSERT INTO quasi_qmux VALUES (?, ?, ?, ?, ?);", quasi_qmuxes)
-    cur.executemany(
-        "DELETE FROM mux WHERE a = ? AND b = ? AND s = ?;",
-        [(a, b, s) for a, b, s, _, _, _ in patterns]
-    )
-    netlist.commit()
-    # print(quasi_qmuxes)
-    return cur.rowcount
+    # step 1: check whether all dffes have the same c
+    c = dffes[0][0][1]
+    if not all(c == dffe[1] for dffedffe in dffes for dffe in dffedffe):
+        raise Exception("dffes have different c values")
 
+    # step 2: check whether all rows of dffes have the same d
+    d = dffes[0][0][0]
+    if not all(all(d == dffe[0] for dffe in dffedffe) for dffedffe in dffes):
+        raise Exception("dffes have different d values")
 
-def reduce_quasi_qmux_once(netlist: NetlistDatabase) -> int:
-    # this keeps the original quasi_qmuxes
-    cur = netlist.cursor()
-    cur.execute(
-        """
-        SELECT dff.q, dff.c, dff.type, qm.qs, qm.ss, m.s, m.y
-        FROM dffe_xx AS dff JOIN quasi_qmux AS qm JOIN mux AS m
-        ON dff.q = m.b AND dff.c = qm.c AND qm.y = m.a AND dff.type = qm.dffe_type;
-        """
-    )
-    patterns = cur.fetchall()
-    if not patterns:
-        return 0
-    quasi_qmuxes = []
-    for q, c, dffe_type, qs, ss, s, y in patterns:
-        qs = json.loads(qs)
-        ss = json.loads(ss)
-        new_qs = qs + [q]
-        new_ss = [s] + ss + [None]
-        # new_qs = [qs, q]    # left: qs, right: q
-        # new_ss = [s, ss, None]  # left: s, right: ss
-        quasi_qmuxes.append((c, json.dumps(new_qs), json.dumps(new_ss), y, dffe_type))
-    cur.executemany("INSERT OR IGNORE INTO quasi_qmux VALUES (?, ?, ?, ?, ?);", quasi_qmuxes)
-    # delete the original quasi_qmuxes
-    cur.executemany(
-        "DELETE FROM quasi_qmux WHERE c = ? AND ss = ? AND dffe_type = ?;",
-        [(c, ss, dffe_type) for _, c, dffe_type, _, ss, _, _ in patterns]
-    )
-    netlist.commit()
-    return cur.rowcount
+    # step 3: check whether all columns of dffes have the same e
+    e = dffes[0][0][2]
+    if not all(all(e == dffe[2] for dffe in dffedffe) for dffedffe in transpose(dffes)):
+        raise Exception("dffes have different e values")
 
+    for dffedffe in dffes:
+        print(dffedffe)
 
-def find_quasi_memory(netlist: NetlistDatabase) -> list:
-    cur = netlist.cursor()
-    memories = []
-    cur.execute("SELECT c, ss, dffe_type FROM quasi_qmux GROUP BY c, ss, dffe_type HAVING COUNT(*) >= 8 ORDER BY LENGTH(ss) DESC;")
-    groups = cur.fetchall()
-    for c, ss, dffe_type in groups:
-        if len(json.loads(ss)) < 10:
-            continue
-        cur.execute("SELECT qs, y FROM quasi_qmux WHERE c = ? AND ss = ? AND dffe_type = ?;", (c, ss, dffe_type))
-        patterns = cur.fetchall()
-        qss = [json.loads(qs) for qs, _ in patterns]
-        rd = [y for _, y in patterns]
-        ss = json.loads(ss)
-        if len(ss) >= 256:
-            memories.append((qss, ss, rd))
-    return memories
+    return None

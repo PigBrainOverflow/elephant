@@ -29,18 +29,24 @@ def test_extract_memory(netlist: db.NetlistDatabase, verbose: bool = False):
         pass
     print("Reduced all qmuxes")
     rps = rewriter.find_readport(netlist)
+    mems = rewriter.find_memory(rps)
     time_elapsed = time.time() - start
-    print(f"Found {len(rps)} read port(s):")
-    for (qss, ra), rd in rps.items():
-        print(f"\tMemory: width = {len(qss)}, height = {len(qss[0])}")
+    print(f"Found {len(mems)} memory(ies):")
+    for qs, rps in mems.items():
+        print(f"\tMemory: width = {len(qs)}, height = {len(qs[0])}")
         if verbose:
-            print(f"\t\tRegisters: {qss[0]}")
-            print(f"\t\tRead address: {ra}")
-            print(f"\t\tRead data: {rd}")
+            print(f"\t\tRegisters: {qs[0]}")
         else:
-            print(f"\t\tRegisters: {qss[0][:5]}" + ("..." if len(qss[0]) > 5 else ""))
-            print(f"\t\tRead address: {ra[:5]}" + ("..." if len(ra) > 5 else ""))
-            print(f"\t\tRead data: {rd[:5]}" + ("..." if len(rd) > 5 else ""))
+            print(f"\t\tRegisters: {qs[0][:5]}" + ("..." if len(qs) > 5 else ""))
+        for i, (_, ra, rd) in enumerate(rps):
+            print(f"\t\tRead port {i}:")
+            if verbose:
+                print(f"\t\t\tRead address: {ra}")
+                print(f"\t\t\tRead data: {rd}")
+            else:
+                print(f"\t\t\tRead address: {ra[:5]}" + ("..." if len(ra) > 5 else ""))
+                print(f"\t\t\tRead data: {rd[:5]}" + ("..." if len(rd) > 5 else ""))
+        rewriter.find_writeport(netlist, qs)
     print(f"Time elapsed: {time_elapsed:.2f}s")
 
 def test_extract_quasi_memory(netlist: db.NetlistDatabase, verbose: bool = False):

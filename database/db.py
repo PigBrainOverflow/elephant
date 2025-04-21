@@ -1,8 +1,5 @@
 import sqlite3
-import pyrtl
-import time
 from . import formatter
-from . import rewriter
 
 
 # A netlist database can only hold one module/netlist.
@@ -61,16 +58,6 @@ class NetlistDatabase(sqlite3.Connection):
                 s INTEGER,
                 y INTEGER,
                 PRIMARY KEY (a, b, s)
-            );
-        """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS quasi_qmux (
-                c INTEGER,
-                qs JSON,
-                ss JSON,
-                y INTEGER,
-                dffe_type VARCHAR(255),
-                PRIMARY KEY (qs, ss, dffe_type)
             );
         """)
         self.commit()
