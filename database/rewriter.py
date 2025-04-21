@@ -1,5 +1,5 @@
 from __future__ import annotations
-import sqlite3
+import collections
 import json
 
 from typing import TYPE_CHECKING
@@ -13,6 +13,15 @@ def subset(a: tuple, b: tuple) -> bool:
 
 def transpose(m) -> list:
     return [[row[i] for row in m] for i in range(len(m[0]))]
+
+LOG2 = {1: 0, 2: 1, 4: 2, 8: 3, 16: 4, 32: 5, 64: 6, 128: 7, 256: 8, 512: 9, 1024: 10, 2048: 11, 4096: 12}  # for exact log2
+
+def log2_ceil(x: int) -> int:
+    # return the smallest power of 2 that is greater than or equal to x
+    for i in range(1, 13):
+        if x <= 2 ** i:
+            return i
+    return 13   # 13 is big enough for our needs
 
 def rewrite_dffe_pn_to_pp(netlist: NetlistDatabase) -> bool:
     cur = netlist.cursor()
@@ -199,9 +208,22 @@ def find_memory(readports: dict[tuple[tuple[tuple[int]], tuple[int]], tuple[int]
             memories[qs] = [(qs, rd, ra)]
     return memories
 
-def find_writeport(netlist: NetlistDatabase, qs: tuple[tuple[int]]) -> tuple[int, tuple[int]] | None:
+def find_binary_sources(netlist: NetlistDatabase, sinks: set[int]) -> set[int]:
+    # It finds all sources of a set of sinks.
+    sources = set()
+    cur = netlist.cursor()
+    for sink in sinks:
+        cur.execute("SELECT a, b FROM binary_gate WHERE y = ? LIMIT 1;", (sink,))
+        res = cur.fetchone()
+        if not res:
+            continue
+        sources.add(res[0])
+        sources.add(res[1])
+    return sources.union(sinks)
+
+def find_writeport(netlist: NetlistDatabase, qs: tuple[tuple[int]]) -> tuple[int, tuple[int], tuple[int]]:
     # It finds the write port of a memory if it exists.
-    # (we, wa)
+    # (we, wa, wd)
     dffes = []
     cur = netlist.cursor()
 
@@ -213,6 +235,8 @@ def find_writeport(netlist: NetlistDatabase, qs: tuple[tuple[int]]) -> tuple[int
             d, c, e = cur.fetchone()
             tmp.append((d, c, e, q))
         dffes.append(tmp)
+    # for dffedffe in dffes:
+    #     print(dffedffe)
 
     # step 1: check whether all dffes have the same c
     c = dffes[0][0][1]
@@ -220,16 +244,55 @@ def find_writeport(netlist: NetlistDatabase, qs: tuple[tuple[int]]) -> tuple[int
         raise Exception("dffes have different c values")
 
     # step 2: check whether all rows of dffes have the same d
-    d = dffes[0][0][0]
-    if not all(all(d == dffe[0] for dffe in dffedffe) for dffedffe in dffes):
-        raise Exception("dffes have different d values")
+    ds = []
+    for dffedffe in dffes:
+        d = dffedffe[0][0]
+        if not all(d == dffe[0] for dffe in dffedffe):
+            raise Exception("dffes have different d values")
+        ds.append(d)
 
     # step 3: check whether all columns of dffes have the same e
-    e = dffes[0][0][2]
-    if not all(all(e == dffe[2] for dffe in dffedffe) for dffedffe in transpose(dffes)):
-        raise Exception("dffes have different e values")
+    es = []
+    for dffedffe in transpose(dffes):
+        e = dffedffe[0][2]
+        if not all(e == dffe[2] for dffe in dffedffe):
+            raise Exception("dffes have different e values")
+        es.append(e)
 
-    for dffedffe in dffes:
-        print(dffedffe)
+    # step 4: check whether all es come from binary gates with the same we
+    e_srcs = []
+    for e in es:
+        cur.execute("SELECT a, b FROM binary_gate WHERE y = ?;", (e,))
+        res = cur.fetchone()
+        if not res:
+            raise Exception("e is not a binary gate output")
+        a, b = res
+        e_srcs.append((a, b))
+    we, found = e_srcs[0][0], True
+    for e_src in e_srcs:
+        if we not in e_src:
+            found = False
+            break
+    if not found:
+        we = e_srcs[0][1]
+        for e_src in e_srcs:
+            if we not in e_src:
+                raise Exception("dffes have different we values")
+    e_srcs_not_we = [a if a != we else b for (a, b) in e_srcs]
+    # print(e_srcs_not_we)
 
-    return None
+    # step 5: check whether all e_srcs_not_we come from binary gates with the same wa
+    e_srcs_rec = []
+    for e_src in e_srcs_not_we:
+        tmp = {e_src}
+        for _ in range(log2_ceil(LOG2[len(e_srcs)])):
+            tmp = find_binary_sources(netlist, tmp)
+        e_srcs_rec.append(tmp)
+    # print(e_srcs_rec)
+    src_appears = collections.Counter(w for e_src in e_srcs_rec for w in e_src)
+    # pick LOG2[len(e_srcs)] most common sources
+    src_appears = src_appears.most_common(LOG2[len(e_srcs)])
+    if len(src_appears) < log2_ceil(LOG2[len(e_srcs)]):
+        raise Exception("not enough sources")
+
+    return we, tuple(src[0] for src in src_appears), tuple(ds)

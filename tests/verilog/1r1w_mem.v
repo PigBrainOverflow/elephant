@@ -1,5 +1,5 @@
 module simple_dual_port_mem #(
-    parameter ADDR_WIDTH = 4,
+    parameter ADDR_WIDTH = 6,
     parameter DATA_WIDTH = 4
 ) (
     input wire clk,

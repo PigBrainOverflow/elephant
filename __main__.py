@@ -16,11 +16,17 @@ NETLIST_FILES = [
     ("bsg_mem_1rw_sync_synth_width_p8_els_p256_latch_last_read_p1",
      "bsg_mem_1rw_sync_synth_width_p8_els_p256_latch_last_read_p1"),
     ("bsg_cache_ways_p_2_data_width_p_32", "top"),
-    ("1r1w_mem", "simple_dual_port_mem")
+    ("1r1w_w4h16", "simple_dual_port_mem"),
+    ("1r1w_w4h64", "simple_dual_port_mem")
 ]
 
 
 def test_extract_memory(netlist: db.NetlistDatabase, verbose: bool = False):
+    # step 1: rewrite and eqsat (optional)
+    # step 2: reduce qmux
+    # step 3: find read port
+    # step 4: find memory
+    # step 5: find write port
     start = time.time()
     rewriter.rewrite_dffe_pn_to_pp(netlist)
     cnt = rewriter.rewrite_mux_to_qmux(netlist)
@@ -46,7 +52,18 @@ def test_extract_memory(netlist: db.NetlistDatabase, verbose: bool = False):
             else:
                 print(f"\t\t\tRead address: {ra[:5]}" + ("..." if len(ra) > 5 else ""))
                 print(f"\t\t\tRead data: {rd[:5]}" + ("..." if len(rd) > 5 else ""))
-        rewriter.find_writeport(netlist, qs)
+        try:
+            wp = rewriter.find_writeport(netlist, qs)
+            print(f"\t\tWrite port:")
+            print(f"\t\t\tWrite enable: {wp[0]}")
+            if verbose:
+                print(f"\t\t\tWrite address: {wp[1]}")
+                print(f"\t\t\tWrite data: {wp[2]}")
+            else:
+                print(f"\t\t\tWrite address: {wp[1][:5]}" + ("..." if len(wp[1]) > 5 else ""))
+                print(f"\t\t\tWrite data: {wp[2][:5]}" + ("..." if len(wp[2]) > 5 else ""))
+        except:
+            print("\t\tWrite port: None")
     print(f"Time elapsed: {time_elapsed:.2f}s")
 
 def test_extract_quasi_memory(netlist: db.NetlistDatabase, verbose: bool = False):
