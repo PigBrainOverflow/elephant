@@ -76,7 +76,7 @@ class NetlistDatabase(sqlite3.Connection):
 
         cur = self.cursor()
         cur.executemany("INSERT INTO wire (id, width) VALUES (?, ?)", wire_data)
-        cur.executemany("INSERT INTO binary_gate (a, b, y, type) VALUES (?, ?, ?, ?)", binary_gate_data)
+        cur.executemany("INSERT OR IGNORE INTO binary_gate (a, b, y, type) VALUES (?, ?, ?, ?)", binary_gate_data)
         cur.executemany("INSERT INTO dffe_xx (d, c, e, q, type) VALUES (?, ?, ?, ?, ?)", dffe_xx_data)
         cur.executemany("INSERT OR IGNORE INTO unary_gate (a, y, type) VALUES (?, ?, ?)", unary_gate_data)  # ignore duplicates
         cur.executemany("INSERT INTO mux (a, b, s, y) VALUES (?, ?, ?, ?)", mux_data)
