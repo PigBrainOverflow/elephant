@@ -208,7 +208,7 @@ def find_memory(readports: dict[tuple[tuple[tuple[int]], tuple[int]], tuple[int]
             memories[qs] = [(qs, rd, ra)]
     return memories
 
-def find_sources(netlist: NetlistDatabase, sinks: set[int]) -> set[int]:
+def find_sources_by_gates(netlist: NetlistDatabase, sinks: set[int]) -> set[int]:
     # It finds all sources of a set of sinks.
     sources = set()
     cur = netlist.cursor()
@@ -223,6 +223,33 @@ def find_sources(netlist: NetlistDatabase, sinks: set[int]) -> set[int]:
         else:
             sources.add(res[0])
             sources.add(res[1])
+    return sources.union(sinks)
+
+def find_sources_by_all(netlist: NetlistDatabase, sinks: set[int]) -> set[int]:
+    # It finds all sources of a set of sinks.
+    sources = set()
+    cur = netlist.cursor()
+    for sink in sinks:
+        cur.execute("SELECT a, b FROM binary_gate WHERE y = ?;", (sink,))
+        res = cur.fetchall()
+        for a, b in res:
+            sources.add(a)
+            sources.add(b)
+        cur.execute("SELECT a FROM unary_gate WHERE y = ?;", (sink,))
+        res = cur.fetchall()
+        for (a,) in res:
+            sources.add(a)
+        cur.execute("SELECT a, b, s FROM mux WHERE y = ?;", (sink,))
+        res = cur.fetchall()
+        for a, b, s in res:
+            sources.add(a)
+            sources.add(b)
+            sources.add(s)
+        cur.execute("SELECT d, e FROM dffe_xx WHERE q = ?;", (sink,))
+        res = cur.fetchall()
+        for d, e in res:
+            sources.add(d)
+            sources.add(e)
     return sources.union(sinks)
 
 def find_writeport(netlist: NetlistDatabase, qs: tuple[tuple[int]]) -> tuple[int, tuple[int], tuple[int]]:
@@ -290,14 +317,25 @@ def find_writeport(netlist: NetlistDatabase, qs: tuple[tuple[int]]) -> tuple[int
     for e_src in e_srcs_not_we:
         tmp = {e_src}
         for _ in range(log2_ceil(LOG2[len(e_srcs)])):
-            tmp = find_sources(netlist, tmp)
+            tmp = find_sources_by_gates(netlist, tmp)
         e_srcs_rec.append(tmp)
     # print(e_srcs_rec)
     src_appears = collections.Counter(w for e_src in e_srcs_rec for w in e_src)
-    print(src_appears)
+    # print(src_appears)
     # pick LOG2[len(e_srcs)] most common sources
     src_appears = src_appears.most_common(LOG2[len(e_srcs)])
     if len(src_appears) < log2_ceil(LOG2[len(e_srcs)]):
         raise Exception("not enough sources")
 
     return we, tuple(src[0] for src in src_appears), tuple(ds)
+
+def find_readwriteport(netlist: NetlistDatabase, ra: tuple[int], wa: tuple[int]) -> tuple | None:
+    # It finds the read-write port of a memory if it exists.
+    ra_srcs, wa_srcs = set(ra), set(wa)
+    for _ in range(4):
+        ra_srcs = find_sources_by_all(netlist, ra_srcs)
+        wa_srcs = find_sources_by_all(netlist, wa_srcs)
+    # print(ra_srcs, wa_srcs)
+    # check the intersection of ra_srcs and wa_srcs
+    rwa = ra_srcs.intersection(wa_srcs)
+    return tuple(rwa) if len(rwa) >= len(ra) else None

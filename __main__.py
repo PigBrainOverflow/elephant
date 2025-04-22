@@ -17,7 +17,8 @@ NETLIST_FILES = [
      "bsg_mem_1rw_sync_synth_width_p8_els_p256_latch_last_read_p1"),
     ("bsg_cache_ways_p_2_data_width_p_32", "top"),
     ("1r1w_w4h16", "simple_dual_port_mem"),
-    ("1r1w_w4h64", "simple_dual_port_mem")
+    ("1r1w_w4h64", "simple_dual_port_mem"),
+    ("1rw_w4h64", "simple_rw_port_mem")
 ]
 
 
@@ -44,7 +45,7 @@ def test_extract_memory(netlist: db.NetlistDatabase, verbose: bool = False):
             print(f"\t\tRegisters: {qs[0]}")
         else:
             print(f"\t\tRegisters: {qs[0][:5]}" + ("..." if len(qs) > 5 else ""))
-        for i, (_, ra, rd) in enumerate(rps):
+        for i, (_, rd, ra) in enumerate(rps):
             print(f"\t\tRead port {i}:")
             if verbose:
                 print(f"\t\t\tRead address: {ra}")
@@ -53,15 +54,25 @@ def test_extract_memory(netlist: db.NetlistDatabase, verbose: bool = False):
                 print(f"\t\t\tRead address: {ra[:5]}" + ("..." if len(ra) > 5 else ""))
                 print(f"\t\t\tRead data: {rd[:5]}" + ("..." if len(rd) > 5 else ""))
         try:
-            wp = rewriter.find_writeport(netlist, qs)
+            we, wa, wd = rewriter.find_writeport(netlist, qs)
             print(f"\t\tWrite port:")
-            print(f"\t\t\tWrite enable: {wp[0]}")
+            print(f"\t\t\tWrite enable: {we}")
             if verbose:
-                print(f"\t\t\tWrite address: {wp[1]}")
-                print(f"\t\t\tWrite data: {wp[2]}")
+                print(f"\t\t\tWrite address: {wa}")
+                print(f"\t\t\tWrite data: {wd}")
             else:
-                print(f"\t\t\tWrite address: {wp[1][:5]}" + ("..." if len(wp[1]) > 5 else ""))
-                print(f"\t\t\tWrite data: {wp[2][:5]}" + ("..." if len(wp[2]) > 5 else ""))
+                print(f"\t\t\tWrite address: {wa[:5]}" + ("..." if len(wa) > 5 else ""))
+                print(f"\t\t\tWrite data: {wd[:5]}" + ("..." if len(wd) > 5 else ""))
+
+            # try read write port
+            rwa = rewriter.find_readwriteport(netlist, ra, wa)
+            if rwa:
+                if verbose:
+                    print(f"\t\t\tPossible read-write address: {rwa}")
+                else:
+                    print(f"\t\t\tPossible read-write address: {rwa[:5]}" + ("..." if len(rwa) > 5 else ""))
+            else:
+                print("\t\t\tPossible read-write address: None")
         except:
             print("\t\tWrite port: None")
     print(f"Time elapsed: {time_elapsed:.2f}s")
