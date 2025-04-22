@@ -107,7 +107,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.name is None and args.top is None:
-        name, top = NETLIST_FILES[-1]
+        name, top = NETLIST_FILES[-2]
         name = NETLIST_PATH + name + ".json"
     elif args.name is None:
         print("Provide JSON filename with --input")

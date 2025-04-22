@@ -208,7 +208,7 @@ def find_memory(readports: dict[tuple[tuple[tuple[int]], tuple[int]], tuple[int]
             memories[qs] = [(qs, rd, ra)]
     return memories
 
-def find_binary_sources(netlist: NetlistDatabase, sinks: set[int]) -> set[int]:
+def find_sources(netlist: NetlistDatabase, sinks: set[int]) -> set[int]:
     # It finds all sources of a set of sinks.
     sources = set()
     cur = netlist.cursor()
@@ -216,9 +216,13 @@ def find_binary_sources(netlist: NetlistDatabase, sinks: set[int]) -> set[int]:
         cur.execute("SELECT a, b FROM binary_gate WHERE y = ? LIMIT 1;", (sink,))
         res = cur.fetchone()
         if not res:
-            continue
-        sources.add(res[0])
-        sources.add(res[1])
+            cur.execute("SELECT a FROM unary_gate WHERE y = ? LIMIT 1;", (sink,))
+            res = cur.fetchone()
+            if res:
+                sources.add(res[0])
+        else:
+            sources.add(res[0])
+            sources.add(res[1])
     return sources.union(sinks)
 
 def find_writeport(netlist: NetlistDatabase, qs: tuple[tuple[int]]) -> tuple[int, tuple[int], tuple[int]]:
@@ -286,10 +290,11 @@ def find_writeport(netlist: NetlistDatabase, qs: tuple[tuple[int]]) -> tuple[int
     for e_src in e_srcs_not_we:
         tmp = {e_src}
         for _ in range(log2_ceil(LOG2[len(e_srcs)])):
-            tmp = find_binary_sources(netlist, tmp)
+            tmp = find_sources(netlist, tmp)
         e_srcs_rec.append(tmp)
     # print(e_srcs_rec)
     src_appears = collections.Counter(w for e_src in e_srcs_rec for w in e_src)
+    print(src_appears)
     # pick LOG2[len(e_srcs)] most common sources
     src_appears = src_appears.most_common(LOG2[len(e_srcs)])
     if len(src_appears) < log2_ceil(LOG2[len(e_srcs)]):
