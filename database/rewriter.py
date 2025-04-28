@@ -148,10 +148,10 @@ def rewrite_mux_to_qmux(netlist: NetlistDatabase) -> int:
         for a, b, s, y, c, dffe_type in res
     ]
     cur.executemany("INSERT INTO qmux VALUES (?, ?, ?, ?, ?);", qmuxes)
-    cur.executemany(
-        "DELETE FROM mux WHERE a = ? AND b = ? AND s = ?;",
-        [(a, b, s) for a, b, s, _, _, _ in res]
-    )
+    # cur.executemany(
+    #     "DELETE FROM mux WHERE a = ? AND b = ? AND s = ?;",
+    #     [(a, b, s) for a, b, s, _, _, _ in res]
+    # )
     netlist.commit()
     return cur.rowcount
 
@@ -335,7 +335,7 @@ def find_readwriteport(netlist: NetlistDatabase, ra: tuple[int], wa: tuple[int])
     for _ in range(4):
         ra_srcs = find_sources_by_all(netlist, ra_srcs)
         wa_srcs = find_sources_by_all(netlist, wa_srcs)
-    # print(ra_srcs, wa_srcs)
+    print(ra_srcs, wa_srcs)
     # check the intersection of ra_srcs and wa_srcs
     rwa = ra_srcs.intersection(wa_srcs)
-    return tuple(rwa) if len(rwa) >= len(ra) else None
+    return tuple(rwa) #if len(rwa) >= len(ra) else None

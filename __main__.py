@@ -18,7 +18,8 @@ NETLIST_FILES = [
     ("bsg_cache_ways_p_2_data_width_p_32", "top"),
     ("1r1w_w4h16", "simple_dual_port_mem"),
     ("1r1w_w4h64", "simple_dual_port_mem"),
-    ("1rw_w4h64", "simple_rw_port_mem")
+    ("1rw_w4h64", "simple_rw_port_mem"),
+    ("sparc_ffu_no_async", "sparc_ffu")
 ]
 
 
@@ -118,7 +119,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.name is None and args.top is None:
-        name, top = NETLIST_FILES[3]
+        name, top = NETLIST_FILES[-1]
         name = NETLIST_PATH + name + ".json"
     elif args.name is None:
         print("Provide JSON filename with --input")
@@ -132,7 +133,7 @@ if __name__ == "__main__":
 
     netlist = db.NetlistDatabase()
     with open(name, "r") as f:
-        netlist.build_from_json(json.load(f), top, True)
+        netlist.build_from_json(json.load(f), top, ignore_errors=True)
 
     if args.quasi:
         test_extract_quasi_memory(netlist, args.verbose)

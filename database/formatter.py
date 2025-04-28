@@ -17,6 +17,7 @@ def json_to_db(netlist: dict, target_module: str, ignore_errors: bool = False) -
     db["unary_gate"] = []
     db["dffe_xx"] = []
     db["mux"] = []
+    db["blackbox"] = []
     for cell in module["cells"].values():
         cell_type = cell["type"]
         if cell_type in DFFE_GATES:
@@ -46,7 +47,26 @@ def json_to_db(netlist: dict, target_module: str, ignore_errors: bool = False) -
                 "type": cell_type
             })
             [wires.add(w) for w in [a, y]]
-        elif not ignore_errors:
+        elif ignore_errors:
+            # put it in the blackbox
+            output = None
+            if "Y" in cell["connections"]:
+                output = int(cell["connections"]["Y"][0])
+            elif "Q" in cell["connections"]:
+                output = int(cell["connections"]["Q"][0])
+            if output is None:
+                raise ValueError(f"Unknown cell type: {cell_type}")
+            inputs = []
+            for k, v in cell["connections"].items():
+                if k not in ("Y", "Q"):
+                    inputs.extend(map(int, v))
+            db["blackbox"].append({
+                "inputs": inputs,
+                "output": output,
+                "type": cell_type
+            })
+            [wires.add(w) for w in inputs]
+        else:
             raise ValueError(f"Unknown cell type: {cell_type}")
 
     # wires
