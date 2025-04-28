@@ -250,6 +250,11 @@ def find_sources_by_all(netlist: NetlistDatabase, sinks: set[int]) -> set[int]:
         for d, e in res:
             sources.add(d)
             sources.add(e)
+        cur.execute("SELECT inputs FROM blackbox WHERE output = ?;", (sink,))
+        res = cur.fetchall()
+        for (inputs,) in res:
+            inputs = json.loads(inputs)
+            sources.update(inputs)
     return sources.union(sinks)
 
 def find_writeport(netlist: NetlistDatabase, qs: tuple[tuple[int]]) -> tuple[int, tuple[int], tuple[int]]:
@@ -332,10 +337,10 @@ def find_writeport(netlist: NetlistDatabase, qs: tuple[tuple[int]]) -> tuple[int
 def find_readwriteport(netlist: NetlistDatabase, ra: tuple[int], wa: tuple[int]) -> tuple | None:
     # It finds the read-write port of a memory if it exists.
     ra_srcs, wa_srcs = set(ra), set(wa)
-    for _ in range(4):
+    for _ in range(1):
         ra_srcs = find_sources_by_all(netlist, ra_srcs)
         wa_srcs = find_sources_by_all(netlist, wa_srcs)
-    print(ra_srcs, wa_srcs)
+    # print(ra_srcs, wa_srcs)
     # check the intersection of ra_srcs and wa_srcs
     rwa = ra_srcs.intersection(wa_srcs)
     return tuple(rwa) #if len(rwa) >= len(ra) else None

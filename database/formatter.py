@@ -55,7 +55,7 @@ def json_to_db(netlist: dict, target_module: str, ignore_errors: bool = False) -
             elif "Q" in cell["connections"]:
                 output = int(cell["connections"]["Q"][0])
             if output is None:
-                raise ValueError(f"Unknown cell type: {cell_type}")
+                continue
             inputs = []
             for k, v in cell["connections"].items():
                 if k not in ("Y", "Q"):
