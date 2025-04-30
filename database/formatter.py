@@ -1,6 +1,6 @@
 BINARY_GATES = {"$_NAND_", "$_ORNOT_", "$_AND_", "$_XNOR_", "$_ANDNOT_", "$_XOR_", "$_OR_", "$_NOR_"}
 UNARY_GATES = {"$_NOT_"}
-DFFE_GATES = {"$_DFFE_PP_", "$_DFFE_PN_"}
+DFFE_GATES = {"$_DFFE_PP_", "$_DFFE_PN_", "$_DFFE_NP_", "$_DFFE_NN_"}
 
 
 def json_to_db(netlist: dict, target_module: str, ignore_errors: bool = False) -> dict[str, dict]:

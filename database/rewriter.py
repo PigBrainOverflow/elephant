@@ -23,7 +23,22 @@ def log2_ceil(x: int) -> int:
             return i
     return 13   # 13 is big enough for our needs
 
-def rewrite_dffe_pn_to_pp(netlist: NetlistDatabase) -> bool:
+# module \$_DFFE_PN_ (D, C, E, Q);
+#     input D, C, E;
+#     output reg Q;
+#     always @(posedge C) begin
+#         if (!E) Q <= D;
+#     end
+# endmodule
+
+# module \$_DFFE_NP_ (D, C, E, Q);
+#     input D, C, E;
+#     output reg Q;
+#     always @(negedge C) begin
+#         if (E) Q <= D;
+#     end
+# endmodule
+def rewrite_dffe_xx_to_pp(netlist: NetlistDatabase):
     cur = netlist.cursor()
     cur.execute("""
         SELECT d, c, e, q
@@ -31,8 +46,6 @@ def rewrite_dffe_pn_to_pp(netlist: NetlistDatabase) -> bool:
         WHERE type = "$_DFFE_PN_";
     """)
     res = cur.fetchall()
-    if not res:
-        return False
     i = netlist.get_next_id()
     for d, c, e, q in res:
         # check whether !e exists
@@ -40,20 +53,43 @@ def rewrite_dffe_pn_to_pp(netlist: NetlistDatabase) -> bool:
         yt = cur.fetchone()
         if yt:
             ne = yt[0]
-        else:   # !e does not exist, create it
+        else:
             ne = i
             i += 1
             cur.execute("INSERT INTO unary_gate VALUES (?, ?, ?);", (e, ne, "$_NOT_"))
             cur.execute("INSERT INTO wire VALUES (?, 1);", (ne,))
-        # update the dffe_pn to dffe_pp
+        # update the dffe_xx to dffe_pp
         cur.execute("""
             UPDATE dffe_xx
             SET type = "$_DFFE_PP_", e = ?
             WHERE type = "$_DFFE_PN_" AND d = ? AND c = ? AND e = ? AND q = ?;
             """, (ne, d, c, e, q)
         )
+    cur.execute("""
+        SELECT d, c, e, q
+        FROM dffe_xx
+        WHERE type = "$_DFFE_NP_";
+    """)
+    res = cur.fetchall()
+    for d, c, e, q in res:
+        # check whether !c exists
+        cur.execute("SELECT y FROM unary_gate WHERE a = ? AND type = \"$_NOT_\";", (c,))
+        yt = cur.fetchone()
+        if yt:
+            nc = yt[0]
+        else:
+            nc = i
+            i += 1
+            cur.execute("INSERT INTO unary_gate VALUES (?, ?, ?);", (c, nc, "$_NOT_"))
+            cur.execute("INSERT INTO wire VALUES (?, 1);", (nc,))
+        # update the dffe_xx to dffe_pp
+        cur.execute("""
+            UPDATE dffe_xx
+            SET type = "$_DFFE_PP_", c = ?
+            WHERE type = "$_DFFE_NP_" AND d = ? AND c = ? AND e = ? AND q = ?;
+            """, (nc, d, c, e, q)
+        )
     netlist.commit()
-    return True
 
 def saturate_comm(netlist: NetlistDatabase, target_type: str) -> int:
     # It finds all commutative binary gates and saturates them.

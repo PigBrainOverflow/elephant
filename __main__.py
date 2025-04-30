@@ -30,7 +30,7 @@ def test_extract_memory(netlist: db.NetlistDatabase, verbose: bool = False):
     # step 4: find memory
     # step 5: find write port
     start = time.time()
-    rewriter.rewrite_dffe_pn_to_pp(netlist)
+    rewriter.rewrite_dffe_xx_to_pp(netlist)
     cnt = rewriter.rewrite_mux_to_qmux(netlist)
     print(f"Rewrote {cnt} muxes to qmuxes")
     while rewriter.reduce_qmux_once(netlist) > 0:
@@ -38,7 +38,6 @@ def test_extract_memory(netlist: db.NetlistDatabase, verbose: bool = False):
     print("Reduced all qmuxes")
     rps = rewriter.find_readport(netlist)
     mems = rewriter.find_memory(rps)
-    time_elapsed = time.time() - start
     print(f"Found {len(mems)} memory(ies):")
     for qs, rps in mems.items():
         print(f"\tMemory: width = {len(qs)}, height = {len(qs[0])}")
@@ -76,6 +75,7 @@ def test_extract_memory(netlist: db.NetlistDatabase, verbose: bool = False):
                 print("\t\t\tPossible read-write address: None")
         except:
             print("\t\tWrite port: None")
+    time_elapsed = time.time() - start
     print(f"Time elapsed: {time_elapsed:.2f}s")
 
 def test_extract_quasi_memory(netlist: db.NetlistDatabase, verbose: bool = False):
